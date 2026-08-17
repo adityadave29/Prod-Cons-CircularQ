@@ -1,0 +1,81 @@
+<div id="seq"></div>
+
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+
+await document.fonts.ready;
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+
+  themeVariables: {
+    background: 'transparent',
+
+    fontFamily: '"anthropic-sans", sans-serif',
+    fontSize: '13px',
+
+    // Force all text to black
+    textColor: '#000000',
+    actorTextColor: '#000000',
+    signalTextColor: '#000000',
+    labelTextColor: '#000000',
+    noteTextColor: '#000000',
+
+    // Lines / arrows
+    lineColor: '#555555',
+    signalColor: '#555555',
+
+    // Participants
+    actorBkg: '#F5F4F0',
+    actorBorder: '#A8A69E',
+
+    // Activation boxes
+    activationBkgColor: '#E8E7E2',
+    activationBorderColor: '#A8A69E',
+
+    // Alt blocks
+    labelBoxBkgColor: '#ECEBE6',
+    labelBoxBorderColor: '#A8A69E',
+
+    // Notes
+    noteBkgColor: '#F0EFEA',
+    noteBorderColor: '#A8A69E'
+  }
+});
+
+const src = `sequenceDiagram
+  participant P as Producer
+  participant S as Server (thread)
+  participant C as Consumer
+
+  P->>S: connect()
+  P->>S: POST /produce\\nContent-Length: N
+  P->>S: message bytes
+  S->>S: read_line() parses method+path
+  S->>S: read headers, get Content-Length
+  S->>S: handle_produce()\\nread_full() body
+  S->>S: queue_push() into circular buffer
+  S-->>P: HTTP/1.1 200 OK\\nContent-Length: 8
+  S-->>P: "ACCEPTED"
+  S->>S: close(client_fd)
+
+  C->>S: connect()
+  C->>S: GET /consume HTTP/1.1
+  S->>S: read_line() parses method+path
+  S->>S: handle_consume()
+  S->>S: queue_pop() from circular buffer
+
+  alt queue has message
+    S-->>C: HTTP/1.1 200 OK\\nContent-Length: len
+    S-->>C: message bytes
+  else queue empty
+    S-->>C: HTTP/1.1 204 No Content
+  end
+
+  S->>S: close(client_fd)`;
+
+const { svg } = await mermaid.render('seq-svg', src);
+
+document.getElementById('seq').innerHTML = svg;
+</script>
