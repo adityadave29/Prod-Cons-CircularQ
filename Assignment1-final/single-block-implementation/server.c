@@ -172,16 +172,12 @@ void *handle_client(void *arg)
         /*
          * Fixed 5-byte request header for every request:
          *   byte 0     -> type ('P', 'C', or 'Q')
-         *   bytes 1..4 -> big-endian length (meaningful only for 'P')
+         *   bytes 1..4 -> length (meaningful only for 'P')
          */
         char header[5];
 
         if (read_full(client_fd, header, sizeof(header)) < 0)
-        {
-            /* Client closed the connection (or error) -> stop looping */
             break;
-        }
-
         char type = header[0];
 
         /* Explicit disconnect request */
@@ -220,8 +216,7 @@ void *handle_client(void *arg)
             write_full(client_fd, &response, 1);
 
             if (success)
-                printf("[PRODUCER] Message added (used=%zu/%zu bytes)\n",
-                       q.used, q.capacity);
+                printf("[PRODUCER] Message added (used=%zu/%zu bytes)\n", q.used, q.capacity);
             else
                 printf("[PRODUCER] Queue FULL, producer rejected\n");
         }
@@ -232,11 +227,6 @@ void *handle_client(void *arg)
             size_t len = 0;
             char *message = queue_pop(&len);
 
-            /*
-             * Fixed 5-byte response header:
-             *   byte 0     -> status (0 = empty, 1 = message follows)
-             *   bytes 1..4 -> big-endian message length (0 if empty)
-             */
             char resp_header[5];
 
             if (message == NULL)
@@ -274,11 +264,8 @@ void *handle_client(void *arg)
         }
         else
         {
-            /* Unknown type -> bad client, stop this connection */
             break;
         }
-
-        /* loop back and wait for the NEXT request on the same connection */
     }
 
     close(client_fd);

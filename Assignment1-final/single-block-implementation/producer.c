@@ -36,7 +36,6 @@ int main(void)
 
         if (fgets(line, sizeof(line), stdin) == NULL)
         {
-            /* EOF (Ctrl+D) -> treat same as explicit quit */
             break;
         }
 

@@ -34,7 +34,7 @@ int main(void)
         fflush(stdout);
 
         if (fgets(line, sizeof(line), stdin) == NULL)
-            break; /* EOF -> quit */
+            break;
 
         size_t llen = strlen(line);
         if (llen > 0 && line[llen - 1] == '\n')
@@ -43,7 +43,6 @@ int main(void)
         if (strcmp(line, "quit") == 0)
             break;
 
-        /* Request: fixed 5-byte header, 'C' + zero-padded length */
         char req_header[5];
         req_header[0] = 'C';
         memset(req_header + 1, 0, sizeof(uint32_t));
@@ -98,7 +97,6 @@ int main(void)
         free(message);
     }
 
-    /* Tell the server we're done, then close */
     char quit_header[5] = {'Q', 0, 0, 0, 0};
     write_full(sock, quit_header, sizeof(quit_header));
 
