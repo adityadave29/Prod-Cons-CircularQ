@@ -1,6 +1,7 @@
 #include "common.h"
 #include <pthread.h>
 #include <signal.h>
+#include <sys/uio.h>
 
 typedef struct
 {
@@ -161,98 +162,123 @@ void handle_shutdown(int sig)
     exit(0);
 }
 
-/* Handle one client */
 void *handle_client(void *arg)
 {
     int client_fd = *(int *)arg;
     free(arg);
 
-    char type;
-
-    if (read_full(client_fd, &type, 1) < 0)
+    while (1)
     {
-        close(client_fd);
-        return NULL;
-    }
+        /*
+         * Fixed 5-byte request header for every request:
+         *   byte 0     -> type ('P', 'C', or 'Q')
+         *   bytes 1..4 -> big-endian length (meaningful only for 'P')
+         */
+        char header[5];
 
-    /* Producer */
-    if (type == 'P')
-    {
-        uint32_t net_len;
-
-        if (read_full(client_fd, &net_len, sizeof(net_len)) < 0)
+        if (read_full(client_fd, header, sizeof(header)) < 0)
         {
-            close(client_fd);
-            return NULL;
+            /* Client closed the connection (or error) -> stop looping */
+            break;
         }
 
-        size_t len = ntohl(net_len);
+        char type = header[0];
 
-        if (len == 0 || len > MAX_MSG_SIZE)
+        /* Explicit disconnect request */
+        if (type == 'Q')
         {
-            close(client_fd);
-            return NULL;
+            printf("[CLIENT] Requested disconnect\n");
+            break;
         }
 
-        char *message = malloc(len);
-        if (message == NULL)
+        /* Producer */
+        if (type == 'P')
         {
-            close(client_fd);
-            return NULL;
-        }
+            uint32_t net_len;
+            memcpy(&net_len, header + 1, sizeof(net_len));
 
-        if (read_full(client_fd, message, len) < 0)
-        {
+            size_t len = ntohl(net_len);
+
+            if (len == 0 || len > MAX_MSG_SIZE)
+                break;
+
+            char *message = malloc(len);
+            if (message == NULL)
+                break;
+
+            /* 2nd read: size only known after decoding the header */
+            if (read_full(client_fd, message, len) < 0)
+            {
+                free(message);
+                break;
+            }
+
+            int success = queue_push(message, len);
             free(message);
-            close(client_fd);
-            return NULL;
+
+            char response = success ? 1 : 0;
+            write_full(client_fd, &response, 1);
+
+            if (success)
+                printf("[PRODUCER] Message added (used=%zu/%zu bytes)\n",
+                       q.used, q.capacity);
+            else
+                printf("[PRODUCER] Queue FULL, producer rejected\n");
         }
 
-        int success = queue_push(message, len);
-        free(message);
-
-        char response = success ? 1 : 0;
-        write_full(client_fd, &response, 1);
-
-        if (success)
+        /* Consumer */
+        else if (type == 'C')
         {
-            printf("[PRODUCER] Message added "
-                   "(used=%zu/%zu bytes)\n",
-                   q.used, q.capacity);
+            size_t len = 0;
+            char *message = queue_pop(&len);
+
+            /*
+             * Fixed 5-byte response header:
+             *   byte 0     -> status (0 = empty, 1 = message follows)
+             *   bytes 1..4 -> big-endian message length (0 if empty)
+             */
+            char resp_header[5];
+
+            if (message == NULL)
+            {
+                resp_header[0] = 0;
+                memset(resp_header + 1, 0, sizeof(uint32_t));
+
+                write_full(client_fd, resp_header, sizeof(resp_header));
+                printf("[CONSUMER] Queue EMPTY\n");
+            }
+            else
+            {
+                uint32_t net_len = htonl((uint32_t)len);
+
+                resp_header[0] = 1;
+                memcpy(resp_header + 1, &net_len, sizeof(net_len));
+
+                struct iovec iov[2];
+                iov[0].iov_base = resp_header;
+                iov[0].iov_len = sizeof(resp_header);
+                iov[1].iov_base = message;
+                iov[1].iov_len = len;
+
+                size_t total_len = iov[0].iov_len + iov[1].iov_len;
+                ssize_t written = writev(client_fd, iov, 2);
+
+                if (written < 0 || (size_t)written != total_len)
+                    perror("writev");
+                else
+                    printf("[CONSUMER] Message removed (used=%zu/%zu bytes)\n",
+                           q.used, q.capacity);
+
+                free(message);
+            }
         }
         else
         {
-            printf("[PRODUCER] Queue FULL, producer rejected\n");
+            /* Unknown type -> bad client, stop this connection */
+            break;
         }
-    }
 
-    /* Consumer */
-    else if (type == 'C')
-    {
-        size_t len;
-        char *message = queue_pop(&len);
-
-        if (message == NULL)
-        {
-            char response = 0;
-            write_full(client_fd, &response, 1);
-            printf("[CONSUMER] Queue EMPTY\n");
-        }
-        else
-        {
-            char response = 1;
-            write_full(client_fd, &response, 1);
-
-            uint32_t net_len = htonl((uint32_t)len);
-            write_full(client_fd, &net_len, sizeof(net_len));
-            write_full(client_fd, message, len);
-
-            printf("[CONSUMER] Message removed "
-                   "(used=%zu/%zu bytes)\n",
-                   q.used, q.capacity);
-
-            free(message);
-        }
+        /* loop back and wait for the NEXT request on the same connection */
     }
 
     close(client_fd);

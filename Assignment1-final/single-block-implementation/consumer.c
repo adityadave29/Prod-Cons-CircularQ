@@ -2,81 +2,107 @@
 
 int main(void)
 {
-    /* Create socket */
-    int sock = socket(AF_INET,SOCK_STREAM,0);
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (sock < 0) {
+    if (sock < 0)
+    {
         perror("socket");
         exit(1);
     }
 
-
     struct sockaddr_in server_addr;
-    memset(&server_addr,0,sizeof(server_addr));
+    memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
-    inet_pton(AF_INET,"127.0.0.1",&server_addr.sin_addr);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
 
-
-    /* Connect to server */
-    if (connect(sock,(struct sockaddr *)&server_addr,sizeof(server_addr)) < 0) {
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
         perror("connect");
         close(sock);
         exit(1);
     }
 
-    /*
-     * Tell server this is a consumer.
-     */
-    char type = 'C';
-    write_full(sock,&type,1);
-    /*
-     * Server sends:
-     *
-     * 0 → queue empty
-     * 1 → message available
-     */
+    printf("Connected. Press Enter to consume the next message.\n");
+    printf("Type 'quit' to disconnect.\n\n");
 
-    char response;
-    if (read_full(sock,&response,1) < 0) {
-        close(sock);
-        exit(1);
-    }
+    char line[16];
 
-    if (response == 0) {
-        printf("Consumer: queue is EMPTY. ""Terminating consumer.\n");
-        close(sock);
-        return 1;
-    }
-    uint32_t net_len;
+    while (1)
+    {
+        printf("> ");
+        fflush(stdout);
 
-    if (read_full(sock,&net_len,sizeof(net_len)) < 0) {
-        close(sock);
-        exit(1);
-    }
+        if (fgets(line, sizeof(line), stdin) == NULL)
+            break; /* EOF -> quit */
 
-    size_t len = ntohl(net_len);
+        size_t llen = strlen(line);
+        if (llen > 0 && line[llen - 1] == '\n')
+            line[llen - 1] = '\0';
 
-    if (len == 0 || len > MAX_MSG_SIZE) {
-        close(sock);
-        exit(1);
-    }
-    char *message = malloc(len + 1);
+        if (strcmp(line, "quit") == 0)
+            break;
 
-    if (message == NULL) {
-        close(sock);
-        exit(1);
-    }
+        /* Request: fixed 5-byte header, 'C' + zero-padded length */
+        char req_header[5];
+        req_header[0] = 'C';
+        memset(req_header + 1, 0, sizeof(uint32_t));
 
-    if (read_full(sock,message,len) < 0) {
+        if (write_full(sock, req_header, sizeof(req_header)) < 0)
+        {
+            fprintf(stderr, "Failed to send request.\n");
+            break;
+        }
+
+        /* Response: fixed 5-byte header first */
+        char resp_header[5];
+        if (read_full(sock, resp_header, sizeof(resp_header)) < 0)
+        {
+            fprintf(stderr, "Server closed connection unexpectedly.\n");
+            break;
+        }
+
+        if (resp_header[0] == 0)
+        {
+            printf("Consumer: queue is EMPTY.\n");
+            continue;
+        }
+
+        uint32_t net_len;
+        memcpy(&net_len, resp_header + 1, sizeof(net_len));
+        size_t len = ntohl(net_len);
+
+        if (len == 0 || len > MAX_MSG_SIZE)
+        {
+            fprintf(stderr, "Invalid message length from server.\n");
+            break;
+        }
+
+        char *message = malloc(len + 1);
+        if (message == NULL)
+        {
+            fprintf(stderr, "malloc failed.\n");
+            break;
+        }
+
+        /* 2nd read: body, size only known after header was parsed */
+        if (read_full(sock, message, len) < 0)
+        {
+            free(message);
+            fprintf(stderr, "Failed to read message body.\n");
+            break;
+        }
+
+        message[len] = '\0';
+        printf("Consumer: received message -> \"%s\"\n", message);
         free(message);
-        close(sock);
-        exit(1);
     }
 
-    message[len] = '\0';
-    printf("Consumer: received message -> \"%s\"\n",message);
-    free(message);
+    /* Tell the server we're done, then close */
+    char quit_header[5] = {'Q', 0, 0, 0, 0};
+    write_full(sock, quit_header, sizeof(quit_header));
+
     close(sock);
+    printf("Disconnected.\n");
     return 0;
 }
